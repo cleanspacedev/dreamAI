@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "966724494324",
+    "project_id": "getd88s74dzbyvweuc5nio1u3fyjuc",
+    "storage_bucket": "getd88s74dzbyvweuc5nio1u3fyjuc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:966724494324:android:bda9d8e7f856aa90124fa1",
+        "android_client_info": {
+          "package_name": "com.dreamAI.dreamAI"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBXGmX6NPnvk4WmNpOf66gjnj147Ko57LM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

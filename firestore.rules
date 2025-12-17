@@ -1,0 +1,66 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function to check if user is authenticated
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    // Helper function to check if user owns the document
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+    
+    // Helper function to check if user is admin (based on custom claims)
+    function isAdmin() {
+      return isSignedIn() && 
+             request.auth.token.get('admin', false) == true;
+    }
+    
+    // Users collection - users can read/update their own profile
+    match /users/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && 
+                       request.auth.uid == userId &&
+                       request.resource.data.userId == userId;
+      allow update, delete: if isOwner(userId);
+      
+      // Analytics subcollection - private to owner
+      match /analytics/{eventId} {
+        allow read, write: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+    
+    // Dreams collection - private to owner
+    match /dreams/{dreamId} {
+      allow read, update, delete: if isSignedIn() && 
+        request.auth.uid == resource.data.ownerId;
+      allow create: if isSignedIn() && 
+        request.auth.uid == request.resource.data.ownerId;
+    }
+    
+    // Dream analyses collection - private to owner
+    match /dream_analyses/{analysisId} {
+      allow read, update, delete: if isSignedIn() && 
+        request.auth.uid == resource.data.ownerId;
+      allow create: if isSignedIn() && 
+        request.auth.uid == request.resource.data.ownerId;
+    }
+    
+    // Prompts collection - public read, admin or cloud function write
+    match /prompts/{promptId} {
+      // Anyone can read prompts (even unauthenticated for public access)
+      allow read: if true;
+      
+      // Only admins or Cloud Functions can create/update/delete prompts
+      // Cloud Functions use admin SDK which bypasses these rules
+      allow write: if isAdmin();
+    }
+    
+    // Default deny all other collections
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

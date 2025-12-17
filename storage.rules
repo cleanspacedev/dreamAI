@@ -1,0 +1,48 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    
+    // Helper function to check if user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // User profile images - private to owner
+    match /users/{userId}/profile/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Dream media (videos, audio, images) - private to owner
+    match /dreams/{userId}/{dreamId}/{fileName} {
+      // Allow read if authenticated (for potential sharing features)
+      allow read: if isAuthenticated();
+      
+      // Allow write only if user is the owner
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Generated videos - private to owner
+    match /generated/{userId}/videos/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Generated images - private to owner
+    match /generated/{userId}/images/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Audio recordings - private to owner
+    match /audio/{userId}/{fileName} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    // Default deny all other paths
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
