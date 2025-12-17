@@ -5,7 +5,9 @@
     "node": "20 || 22"
   },
   "main": "lib/index.js",
-  "scripts": {},
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
   "dependencies": {
     "@google-cloud/bigquery": "^7.7.0",
     "@ffmpeg-installer/ffmpeg": "^1.1.0",

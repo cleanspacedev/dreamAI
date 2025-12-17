@@ -40,9 +40,16 @@ const bq = new BigQuery({ projectId: BQ_PROJECT || undefined });
 
 // Configure ffmpeg static binary for fluent-ffmpeg
 // Ensure we point to the bundled binary in Cloud Functions environment
+// When npm is run with --ignore-scripts, some installer scripts may not execute.
+// We guard for missing binaries and fail gracefully in HTTP handler.
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-ffmpeg.setFfmpegPath((ffmpegInstaller as any).path || (ffmpegInstaller as unknown as { path: string }).path);
+const ffmpegPath: string | undefined = (ffmpegInstaller as any)?.path || (ffmpegInstaller as unknown as { path?: string })?.path;
+if (ffmpegPath && fs.existsSync(ffmpegPath)) {
+  ffmpeg.setFfmpegPath(ffmpegPath);
+} else {
+  console.warn('FFmpeg binary not found. stitchDreamFilm will return 501 until FFmpeg is available.');
+}
 
 // OpenAI client (requires env OPENAI_API_KEY)
 function getOpenAI(): OpenAI | null {
@@ -346,6 +353,9 @@ export const stitchDreamFilm = onRequest({ region: 'us-central1', timeoutSeconds
     res.setHeader('Access-Control-Allow-Headers', 'authorization, content-type');
     res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
     if (req.method === 'OPTIONS') return res.status(204).send('');
+    if (!ffmpegPath || !fs.existsSync(ffmpegPath)) {
+      return res.status(501).json({ error: 'ffmpeg_unavailable', details: 'FFmpeg binary is not available in this deployment. Re-deploy without --ignore-scripts or provide a custom binary.' });
+    }
     const auth = req.headers.authorization || '';
     // Optional simple auth: Bearer <token> equals environment STITCH_TOKEN
     const requiredToken = process.env.STITCH_TOKEN;
@@ -400,6 +410,57 @@ export const stitchDreamFilm = onRequest({ region: 'us-central1', timeoutSeconds
   } catch (e: any) {
     console.error('stitchDreamFilm error', e);
     res.status(500).json({ error: 'internal', details: String(e?.message || e) });
+  }
+});
+
+// OpenAI proxy with CORS for Web clients
+// Usage: set OPENAI_PROXY_ENDPOINT to the URL of this function with a trailing slash,
+// then call `${endpoint}chat/completions`, `${endpoint}audio/speech`, `${endpoint}audio/transcriptions`.
+export const openaiProxy = onRequest({ region: 'us-central1', maxInstances: 10 }, async (req, res) => {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+
+  const upstreamBase = 'https://api.openai.com/v1/';
+  const path = (req.path || '').replace(/^\/+/, ''); // e.g. "chat/completions"
+
+  // Only allow the specific OpenAI endpoints we need
+  const allow = new Set(['chat/completions', 'audio/speech', 'audio/transcriptions']);
+  if (!allow.has(path)) {
+    return res.status(404).json({ error: 'not_found', path });
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ error: 'missing_openai_key' });
+  }
+
+  try {
+    // Preserve incoming content-type; always override Authorization
+    const contentType = (req.headers['content-type'] as string) || 'application/json';
+    const upstreamUrl = new URL(path, upstreamBase).toString();
+
+    const upstreamResp = await (globalThis as any).fetch(upstreamUrl, {
+      method: req.method,
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': contentType,
+        'Accept': 'application/json, audio/mpeg, audio/wav, */*',
+      },
+      // rawBody is a Buffer in CF v2
+      body: req.method === 'POST' ? (req as any).rawBody : undefined,
+    });
+
+    const buf = Buffer.from(await (upstreamResp as any).arrayBuffer());
+    const ct = upstreamResp.headers.get('content-type') || 'application/octet-stream';
+    res.setHeader('Content-Type', ct);
+    res.status(upstreamResp.status).send(buf);
+  } catch (e: any) {
+    console.error('openaiProxy error', e);
+    res.status(502).json({ error: 'bad_gateway', details: String(e?.message || e) });
   }
 });
 
@@ -565,4 +626,169 @@ export const cleanupOldData = onSchedule({ region: 'us-central1', schedule: 'eve
     batch.set(doc.ref, { archived: true, archivedAt: admin.firestore.FieldValue.serverTimestamp() }, { merge: true });
   });
   await batch.commit();
+});
+
+// 10) ensureTodayPrompt: callable to generate and store today's prompt server-side
+function yyyymmdd(d: Date): string {
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  return `${d.getUTCFullYear()}${mm}${dd}`;
+}
+
+export const ensureTodayPrompt = onCall({ region: 'us-central1' }, async (request) => {
+  const uid = request.auth?.uid;
+  // Not strictly required to be authenticated, but having a uid is useful for analytics
+  const language = (request.data?.language as string | undefined) || 'en';
+  const topic = (request.data?.topic as string | undefined) || undefined;
+
+  const now = new Date();
+  const dayId = yyyymmdd(now);
+  const db = admin.firestore();
+  const ref = db.collection('prompts').doc(dayId);
+
+  // If already exists, return it
+  const existing = await ref.get();
+  if (existing.exists) {
+    return { id: existing.id, ...existing.data() };
+  }
+
+  // Try to generate via OpenAI (server-side)
+  let text = 'Describe a dream that felt unusually real.';
+  let theme: string | null = null;
+  let tags: string[] = [];
+  try {
+    const openai = getOpenAI();
+    if (openai) {
+      const sys = `You generate succinct daily journaling prompts about dreams. Return ONLY a JSON object with keys: text, theme, tags (array). Keep text under 140 characters. Use the requested language: ${language}.`;
+      const userText = topic
+        ? `Create today's dream journaling prompt on the topic: "${topic}".`
+        : `Create today's dream journaling prompt.`;
+      const comp = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        temperature: 0.8,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: sys },
+          { role: 'user', content: [{ type: 'text', text: userText }] as any },
+        ],
+      });
+      const content = (comp.choices?.[0]?.message?.content as string | undefined) || '';
+      if (content.trim()) {
+        try {
+          const parsed = JSON.parse(content);
+          text = String(parsed.text || text);
+          theme = parsed.theme ? String(parsed.theme) : null;
+          tags = Array.isArray(parsed.tags) ? parsed.tags.map((x: any) => String(x)) : [];
+        } catch (_) {
+          // leave defaults
+        }
+      }
+    }
+  } catch (e) {
+    console.error('ensureTodayPrompt OpenAI failed', e);
+  }
+
+  const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const payload = {
+    text,
+    theme: theme || undefined,
+    tags,
+    language,
+    date: admin.firestore.Timestamp.fromDate(todayUtc),
+    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    dynamic: true,
+    createdBy: uid || null,
+  };
+
+  await ref.set(payload, { merge: true });
+  const final = await ref.get();
+  return { id: final.id, ...final.data() };
+});
+
+// HTTP wrapper for ensureTodayPrompt with permissive CORS for web clients.
+// This simply mirrors the onCall logic above but as an onRequest to avoid
+// preflight/CORS issues from browsers. POST JSON body: { language?: string, topic?: string }
+export const ensureTodayPromptHttp = onRequest({ region: 'us-central1', maxInstances: 10 }, async (req, res) => {
+  // CORS headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Headers', 'authorization, x-client-info, apikey, content-type');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  if (req.method === 'OPTIONS') return res.status(204).send('');
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'method_not_allowed' });
+  }
+
+  try {
+    const body = (req.body || {}) as any;
+    const language = (body.language as string | undefined) || 'en';
+    const topic = (body.topic as string | undefined) || undefined;
+
+    const now = new Date();
+    const dayId = yyyymmdd(now);
+    const db = admin.firestore();
+    const ref = db.collection('prompts').doc(dayId);
+
+    // If already exists, return it
+    const existing = await ref.get();
+    if (existing.exists) {
+      return res.json({ id: existing.id, ...existing.data() });
+    }
+
+    // Try to generate via OpenAI (server-side)
+    let text = 'Describe a dream that felt unusually real.';
+    let theme: string | null = null;
+    let tags: string[] = [];
+    try {
+      const openai = getOpenAI();
+      if (openai) {
+        const sys = `You generate succinct daily journaling prompts about dreams. Return ONLY a JSON object with keys: text, theme, tags (array). Keep text under 140 characters. Use the requested language: ${language}.`;
+        const userText = topic
+          ? `Create today's dream journaling prompt on the topic: "${topic}".`
+          : `Create today's dream journaling prompt.`;
+        const comp = await openai.chat.completions.create({
+          model: 'gpt-4o-mini',
+          temperature: 0.8,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: sys },
+            { role: 'user', content: [{ type: 'text', text: userText }] as any },
+          ],
+        });
+        const content = (comp.choices?.[0]?.message?.content as string | undefined) || '';
+        if (content.trim()) {
+          try {
+            const parsed = JSON.parse(content);
+            text = String(parsed.text || text);
+            theme = parsed.theme ? String(parsed.theme) : null;
+            tags = Array.isArray(parsed.tags) ? parsed.tags.map((x: any) => String(x)) : [];
+          } catch (_) {
+            // leave defaults
+          }
+        }
+      }
+    } catch (e) {
+      console.error('ensureTodayPromptHttp OpenAI failed', e);
+    }
+
+    const todayUtc = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const payload = {
+      text,
+      theme: theme || undefined,
+      tags,
+      language,
+      date: admin.firestore.Timestamp.fromDate(todayUtc),
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      dynamic: true,
+      createdBy: null,
+    };
+
+    await ref.set(payload, { merge: true });
+    const final = await ref.get();
+    return res.json({ id: final.id, ...final.data() });
+  } catch (e: any) {
+    console.error('ensureTodayPromptHttp error', e);
+    return res.status(500).json({ error: 'internal', details: String(e?.message || e) });
+  }
 });

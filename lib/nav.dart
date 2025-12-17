@@ -6,6 +6,7 @@ import 'package:dreamweaver/screens/onboarding_wizard.dart';
 import 'package:dreamweaver/screens/dream_logging_screen.dart';
 import 'package:dreamweaver/screens/interpretation_screen.dart';
 import 'package:dreamweaver/screens/film_generation_screen.dart';
+import 'package:dreamweaver/screens/settings_screen.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_analytics/observer.dart';
 
@@ -86,6 +87,13 @@ class AppRouter {
           return NoTransitionPage(child: FilmFullscreenPage(dreamId: dreamId));
         },
       ),
+      GoRoute(
+        path: AppRoutes.settings,
+        name: 'settings',
+        pageBuilder: (context, state) => const NoTransitionPage(
+          child: SettingsScreen(),
+        ),
+      ),
     ],
   );
 }
@@ -100,4 +108,5 @@ class AppRoutes {
   static const String insights = '/insights/:dreamId';
   static const String film = '/film/:dreamId';
   static const String filmFull = '/film/:dreamId/full';
+  static const String settings = '/settings';
 }

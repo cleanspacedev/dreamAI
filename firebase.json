@@ -29,7 +29,9 @@
       "source": "firebase/functions",
       "codebase": "default",
       "runtime": "nodejs22",
-      "predeploy": [],
+      "predeploy": [
+        "npm --prefix \"$RESOURCE_DIR\" ci --ignore-scripts --omit=dev"
+      ],
       "ignore": [
         "node_modules",
         ".git",

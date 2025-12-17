@@ -15,8 +15,42 @@ import 'package:http/http.dart' as http;
 const openAiApiKey = String.fromEnvironment('OPENAI_PROXY_API_KEY');
 const openAiEndpoint = String.fromEnvironment('OPENAI_PROXY_ENDPOINT');
 
+// Default proxy domain (requested)
+const _defaultProxyEndpoint = 'https://proxy.cleanspace.com/';
+
 /// Returns true when API key and endpoint look usable.
-bool get hasOpenAiConfig => openAiApiKey.isNotEmpty && openAiEndpoint.isNotEmpty;
+bool get hasOpenAiConfig {
+  // Allow either explicit endpoint or default proxy. API key may be optional if proxy injects it.
+  final endpoint = (openAiEndpoint.isNotEmpty ? openAiEndpoint : _defaultProxyEndpoint).trim();
+  return endpoint.isNotEmpty; // api key can be empty if proxy handles auth
+}
+
+/// Resolve the base endpoint. If the endpoint is a Cloud Functions root
+/// (e.g. https://us-central1-<project>.cloudfunctions.net/), automatically
+/// route requests through the `openaiProxy` function so that calls like
+/// `.resolve('chat/completions')` work on Web without CORS failures.
+Uri _resolvedBaseEndpoint() {
+  try {
+    // Prefer explicit endpoint; otherwise fall back to default proxy
+    final raw = (openAiEndpoint.isNotEmpty ? openAiEndpoint : _defaultProxyEndpoint).trim();
+    if (raw.isEmpty) return Uri();
+    final base = Uri.parse(raw.endsWith('/') ? raw : '$raw/');
+    if (base.host.contains('cloudfunctions.net')) {
+      final segs = base.pathSegments.where((s) => s.isNotEmpty).toList();
+      if (segs.isEmpty) {
+        // No function name provided; default to openaiProxy/
+        return base.resolve('openaiProxy/');
+      }
+    }
+    return base;
+  } catch (_) {
+    return Uri();
+  }
+}
+
+/// Public accessor for other services that need to build raw URLs
+/// (e.g., multipart requests for audio/transcriptions).
+Uri openAiBase() => _resolvedBaseEndpoint();
 
 /// Generate speech audio from text using OpenAI's TTS API.
 ///
@@ -35,31 +69,71 @@ Future<Uint8List?> openAiTtsSynthesize({
   }
 
   try {
-    final uri = Uri.parse(openAiEndpoint).resolve('audio/speech');
     final body = jsonEncode({
       'model': model,
       'voice': voice,
       'input': text,
       'format': format, // mp3, wav, etc.
     });
-    final resp = await http.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $openAiApiKey',
-        'Content-Type': 'application/json',
-      },
-      body: body,
-    );
-    if (resp.statusCode == 200) {
-      return resp.bodyBytes; // binary audio
+
+    // Try multiple URL shapes for Cloud Functions compatibility and proxy fallback.
+    final base = _resolvedBaseEndpoint();
+    // Helper to compute CF root, e.g. https://us-central1-<proj>.cloudfunctions.net/
+    Uri _cfRoot(Uri u) => Uri.parse('${u.scheme}://${u.host}/');
+    final candidates = <Uri>[
+      // 1) {endpoint}/audio/speech
+      if (base.toString().isNotEmpty) base.resolve('audio/speech'),
+      // 2) {endpoint}?path=audio/speech (for functions that don’t expose subpaths)
+      if (base.toString().isNotEmpty)
+        base.replace(
+          queryParameters: {
+            ...base.queryParameters,
+            'path': 'audio/speech',
+          },
+        ),
+      // 3) If endpoint is Cloud Functions, also try the canonical function name openaiProxy at the root
+      if (base.host.contains('cloudfunctions.net')) _cfRoot(base).resolve('openaiProxy/audio/speech'),
+      // 4) As a final safety, try the requested default proxy domain
+      Uri.parse(_defaultProxyEndpoint).resolve('audio/speech'),
+    ];
+
+    http.Response? good;
+    for (final uri in candidates) {
+      try {
+        final resp = await http.post(
+          uri,
+          headers: {
+            if (openAiApiKey.isNotEmpty) 'Authorization': 'Bearer $openAiApiKey',
+            'Content-Type': 'application/json',
+            // Hint desired binary type to proxies/edges
+            'Accept': 'audio/mpeg',
+            // Provide an alternate hint in case the proxy expects this header
+            'X-OpenAI-Path': 'audio/speech',
+          },
+          body: body,
+        );
+        final ct = (resp.headers['content-type'] ?? resp.headers['Content-Type'] ?? '').toLowerCase();
+        if (resp.statusCode == 200 && ct.startsWith('audio/')) {
+          good = resp;
+          break;
+        }
+        debugPrint('TTS attempt ${uri.toString()} -> ${resp.statusCode}: ${utf8.decode(resp.bodyBytes, allowMalformed: true)}');
+      } catch (e) {
+        debugPrint('TTS attempt failed for ${uri.toString()}: $e');
+      }
+    }
+
+    if (good != null) {
+      return good!.bodyBytes; // binary audio
     }
 
     // Fallback to legacy 'tts-1' if model unsupported
-    if (resp.statusCode == 400 && !model.contains('tts-1')) {
-      debugPrint('Primary TTS model failed (${resp.statusCode}). Retrying with tts-1. Body: ${resp.body}');
+    // We cannot rely on a specific status code here due to multiple attempts.
+    if (!model.contains('tts-1')) {
+      debugPrint('Primary TTS model failed. Retrying with tts-1.');
       return await openAiTtsSynthesize(text: text, model: 'tts-1', voice: voice, format: format);
     }
-    debugPrint('OpenAI TTS failed: ${resp.statusCode} ${utf8.decode(resp.bodyBytes)}');
+    debugPrint('OpenAI TTS failed for all URL shapes.');
     return null;
   } catch (e) {
     debugPrint('OpenAI TTS error: $e');
@@ -86,7 +160,7 @@ Future<OpenAiGeneratedPrompt> openAiGenerateDailyPrompt({
     return const OpenAiGeneratedPrompt();
   }
   try {
-    final uri = Uri.parse(openAiEndpoint).resolve('chat/completions');
+    final base = _resolvedBaseEndpoint();
     final sys = 'You generate succinct daily journaling prompts about dreams. '
         'Return ONLY a JSON object with keys: text, theme, tags (array). '
         'Keep text under 140 characters. Use the requested language: $language.';
@@ -110,16 +184,40 @@ Future<OpenAiGeneratedPrompt> openAiGenerateDailyPrompt({
       'temperature': 0.8,
       'response_format': {'type': 'json_object'},
     });
-    final resp = await http.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $openAiApiKey',
-        'Content-Type': 'application/json',
-      },
-      body: body,
-    );
-    if (resp.statusCode == 200) {
-      final decoded = json.decode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+    // Helper to compute CF root
+    Uri _cfRoot(Uri u) => Uri.parse('${u.scheme}://${u.host}/');
+    final candidates = <Uri>[
+      base.resolve('chat/completions'),
+      base.replace(queryParameters: {...base.queryParameters, 'path': 'chat/completions'}),
+      if (base.host.contains('cloudfunctions.net')) _cfRoot(base).resolve('openaiProxy/chat/completions'),
+      Uri.parse(_defaultProxyEndpoint).resolve('chat/completions'),
+    ];
+
+    http.Response? good;
+    for (final uri in candidates) {
+      try {
+        final resp = await http.post(
+          uri,
+          headers: {
+            if (openAiApiKey.isNotEmpty) 'Authorization': 'Bearer $openAiApiKey',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-OpenAI-Path': 'chat/completions',
+          },
+          body: body,
+        );
+        if (resp.statusCode == 200) {
+          good = resp;
+          break;
+        }
+        debugPrint('Prompt attempt ${uri.toString()} -> ${resp.statusCode}: ${utf8.decode(resp.bodyBytes, allowMalformed: true)}');
+      } catch (e) {
+        debugPrint('Prompt attempt failed for ${uri.toString()}: $e');
+      }
+    }
+
+    if (good != null) {
+      final decoded = json.decode(utf8.decode(good!.bodyBytes)) as Map<String, dynamic>;
       final content = ((decoded['choices'] as List).first as Map)['message']['content'] as String?;
       if (content != null && content.trim().isNotEmpty) {
         try {
@@ -134,7 +232,8 @@ Future<OpenAiGeneratedPrompt> openAiGenerateDailyPrompt({
       }
       return const OpenAiGeneratedPrompt();
     }
-    debugPrint('OpenAI generate prompt failed: ${resp.statusCode} ${utf8.decode(resp.bodyBytes)}');
+
+    debugPrint('OpenAI generate prompt failed for all URL shapes.');
     return const OpenAiGeneratedPrompt();
   } catch (e) {
     debugPrint('OpenAI generate prompt error: $e');
@@ -155,7 +254,7 @@ Future<String?> openAiTranslate({
     return null;
   }
   try {
-    final uri = Uri.parse(openAiEndpoint).resolve('chat/completions');
+    final base = _resolvedBaseEndpoint();
     final sys = StringBuffer()
       ..writeln('You are a precise translator. Translate user-provided text into "$targetLanguage".')
       ..writeln('Rules:')
@@ -182,20 +281,43 @@ Future<String?> openAiTranslate({
       ],
       'temperature': 0.2,
     });
-    final resp = await http.post(
-      uri,
-      headers: {
-        'Authorization': 'Bearer $openAiApiKey',
-        'Content-Type': 'application/json',
-      },
-      body: body,
-    );
-    if (resp.statusCode == 200) {
-      final decoded = json.decode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+    Uri _cfRoot(Uri u) => Uri.parse('${u.scheme}://${u.host}/');
+    final candidates = <Uri>[
+      base.resolve('chat/completions'),
+      base.replace(queryParameters: {...base.queryParameters, 'path': 'chat/completions'}),
+      if (base.host.contains('cloudfunctions.net')) _cfRoot(base).resolve('openaiProxy/chat/completions'),
+      Uri.parse(_defaultProxyEndpoint).resolve('chat/completions'),
+    ];
+
+    http.Response? good;
+    for (final uri in candidates) {
+      try {
+        final resp = await http.post(
+          uri,
+          headers: {
+            if (openAiApiKey.isNotEmpty) 'Authorization': 'Bearer $openAiApiKey',
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'X-OpenAI-Path': 'chat/completions',
+          },
+          body: body,
+        );
+        if (resp.statusCode == 200) {
+          good = resp;
+          break;
+        }
+        debugPrint('Translate attempt ${uri.toString()} -> ${resp.statusCode}: ${utf8.decode(resp.bodyBytes, allowMalformed: true)}');
+      } catch (e) {
+        debugPrint('Translate attempt failed for ${uri.toString()}: $e');
+      }
+    }
+
+    if (good != null) {
+      final decoded = json.decode(utf8.decode(good!.bodyBytes)) as Map<String, dynamic>;
       final content = ((decoded['choices'] as List).first as Map)['message']['content'] as String?;
       return content?.trim();
     }
-    debugPrint('OpenAI translate failed: ${resp.statusCode} ${utf8.decode(resp.bodyBytes)}');
+    debugPrint('OpenAI translate failed for all URL shapes.');
     return null;
   } catch (e) {
     debugPrint('OpenAI translate error: $e');

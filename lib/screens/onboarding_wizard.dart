@@ -46,9 +46,9 @@ class _OnboardingWizardState extends State<OnboardingWizard> {
   String? _recordPath;
 
   // Step 3
-  String _theme = 'system';
+  String _theme = 'system'; // default to system, configurable later in Settings
   String _voiceStyle = 'default';
-  String _language = WidgetsBinding.instance.platformDispatcher.locale.languageCode;
+  String _language = WidgetsBinding.instance.platformDispatcher.locale.languageCode; // autodetected
   bool _savingPrefs = false;
 
   @override
@@ -63,7 +63,9 @@ class _OnboardingWizardState extends State<OnboardingWizard> {
 
   Future<void> _initRecorder() async {
     try {
-      await _recorder.openRecorder();
+      if (!kIsWeb) {
+        await _recorder.openRecorder();
+      }
       if (!kIsWeb && (Platform.isAndroid || Platform.isIOS)) {
         final status = await Permission.microphone.request();
         if (!status.isGranted) {
@@ -81,7 +83,9 @@ class _OnboardingWizardState extends State<OnboardingWizard> {
     _controller.dispose();
     _emailCtrl.dispose();
     _passCtrl.dispose();
-    _recorder.closeRecorder();
+    if (!kIsWeb) {
+      _recorder.closeRecorder();
+    }
     super.dispose();
   }
 
@@ -134,6 +138,12 @@ class _OnboardingWizardState extends State<OnboardingWizard> {
 
   Future<void> _toggleRecording() async {
     if (!_recorderReady) return;
+    if (kIsWeb) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Voice recording is not supported on web in this build.')),
+      );
+      return;
+    }
     if (_isRecording) {
       final path = await _recorder.stopRecorder();
       setState(() {
@@ -273,13 +283,13 @@ class _OnboardingWizardState extends State<OnboardingWizard> {
                 if (i == 1) {
                   await TTSService.instance.speak('Step two. Say something and I will transcribe it.');
                 } else if (i == 2) {
-                  await TTSService.instance.speak('Final step. Choose your theme, voice, and language.');
+                  await TTSService.instance.speak('Final step. Choose a voice style you like.');
                 }
               },
               children: [
                 _buildAuthStep(auth, theme),
                 _buildVoiceStep(theme),
-                _buildPreferencesStep(theme),
+                _buildVoiceStyleStep(theme),
               ],
             ),
           ),
@@ -372,116 +382,210 @@ class _OnboardingWizardState extends State<OnboardingWizard> {
   }
 
   Widget _buildVoiceStep(ThemeData theme) {
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('Step 2 of 3', style: theme.textTheme.titleLarge),
-              const SizedBox(height: 8),
-              Text('Voice test. Record a short phrase, then we\'ll transcribe it with OpenAI.',
-                  style: theme.textTheme.bodyMedium),
-              const SizedBox(height: 24),
-              FilledButton.icon(
-                onPressed: !_recorderReady ? null : _toggleRecording,
-                icon: Icon(_isRecording ? Icons.stop : Icons.mic, color: Colors.white),
-                label: Text(_isRecording ? 'Stop' : 'Record'),
-              ),
-              const SizedBox(height: 12),
-              FilledButton.icon(
-                onPressed: (_recordPath != null && !_transcribing) ? _transcribe : null,
-                icon: const Icon(Icons.translate, color: Colors.white),
-                label: Text(_transcribing ? 'Transcribing...' : 'Transcribe'),
-              ),
-              const SizedBox(height: 16),
-              if (_transcription != null)
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.surfaceContainerLow,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    _transcription!,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 960),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('Step 2 of 3', style: theme.textTheme.titleLarge),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Record a short phrase, then we\'ll transcribe it so you can confirm audio works.',
                     style: theme.textTheme.bodyMedium,
                   ),
-                ),
-            ],
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: Card(
+                      clipBehavior: Clip.antiAlias,
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Text(
+                              _isRecording ? 'Listening...' : 'Tap to record',
+                              style: theme.textTheme.titleLarge,
+                            ),
+                            const SizedBox(height: 20),
+                            SizedBox(
+                              height: 120,
+                              child: AspectRatio(
+                                aspectRatio: 1,
+                                child: InkResponse(
+                                  radius: 120,
+                                  onTap: !_recorderReady ? null : _toggleRecording,
+                                  child: AnimatedContainer(
+                                    duration: const Duration(milliseconds: 250),
+                                    decoration: BoxDecoration(
+                                      color: _isRecording
+                                          ? theme.colorScheme.primary.withValues(alpha: 0.15)
+                                          : theme.colorScheme.surfaceContainerHighest,
+                                      shape: BoxShape.circle,
+                                      border: Border.all(color: theme.colorScheme.primary, width: 2),
+                                    ),
+                                    child: Center(
+                                      child: Icon(
+                                        _isRecording ? Icons.stop : Icons.mic,
+                                        size: 48,
+                                        color: theme.colorScheme.primary,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(height: 24),
+                            FilledButton.icon(
+                              onPressed: (_recordPath != null && !_transcribing) ? _transcribe : null,
+                              icon: const Icon(Icons.auto_awesome, color: Colors.white),
+                              label: Text(_transcribing ? 'Transcribing…' : 'Transcribe recording'),
+                            ),
+                            const SizedBox(height: 20),
+                            if (_transcription != null)
+                              Container(
+                                width: double.infinity,
+                                padding: const EdgeInsets.all(16),
+                                decoration: BoxDecoration(
+                                  color: theme.colorScheme.surfaceContainerLow,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: Text(
+                                  _transcription!,
+                                  style: theme.textTheme.bodyMedium,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildPreferencesStep(ThemeData theme) {
-    final languages = const ['en', 'es', 'fr', 'de', 'it', 'pt', 'ru', 'zh', 'ja', 'ko', 'ar', 'hi'];
-    final voices = const ['default', 'warm', 'bright', 'calm'];
-    final themes = const ['system', 'light', 'dark'];
-    return Padding(
-      padding: const EdgeInsets.all(20),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 600),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text('Step 3 of 3', style: theme.textTheme.titleLarge),
-              const SizedBox(height: 8),
-              Text('Pick your theme, voice vibe, and language.', style: theme.textTheme.bodyMedium),
-              const SizedBox(height: 16),
-              Text('Theme', style: theme.textTheme.titleMedium),
-              Wrap(
-                spacing: 8,
+  Widget _buildVoiceStyleStep(ThemeData theme) {
+    final voices = const [
+      ('default', Icons.record_voice_over, 'Balanced, natural narration'),
+      ('warm', Icons.wb_twilight, 'Gentle and friendly tone'),
+      ('bright', Icons.waves, 'Energetic and clear delivery'),
+      ('calm', Icons.self_improvement, 'Relaxed and steady pacing'),
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isWide = constraints.maxWidth > 720;
+        final crossAxisCount = isWide ? 2 : 1;
+        return Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 1000),
+            child: Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  for (final t in themes)
-                    ChoiceChip(
-                      label: Text(t),
-                      selected: _theme == t,
-                      onSelected: (_) => setState(() => _theme = t),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Text('Voice style', style: theme.textTheme.titleMedium),
-              Wrap(
-                spacing: 8,
-                children: [
-                  for (final v in voices)
-                    ChoiceChip(
-                      label: Text(v),
-                      selected: _voiceStyle == v,
-                      onSelected: (_) async {
-                        setState(() => _voiceStyle = v);
-                        await TTSService.instance.speak('Voice style set to $v');
+                  Text('Step 3 of 3', style: theme.textTheme.titleLarge),
+                  const SizedBox(height: 8),
+                  Text('Choose a voice style. We\'ll play a quick sample.', style: theme.textTheme.bodyMedium),
+                  const SizedBox(height: 16),
+                  Expanded(
+                    child: GridView.builder(
+                      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: crossAxisCount,
+                        crossAxisSpacing: 16,
+                        mainAxisSpacing: 16,
+                        childAspectRatio: isWide ? 2.6 : 2.0,
+                      ),
+                      itemCount: voices.length,
+                      itemBuilder: (context, idx) {
+                        final (id, icon, desc) = voices[idx];
+                        final selected = _voiceStyle == id;
+                        return InkWell(
+                          borderRadius: BorderRadius.circular(16),
+                          onTap: () async {
+                            setState(() => _voiceStyle = id);
+                            await TTSService.instance.speakSampleForStyle(id);
+                          },
+                          child: Card(
+                            elevation: 0,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                              side: BorderSide(
+                                color: selected
+                                    ? theme.colorScheme.primary
+                                    : theme.colorScheme.outline.withValues(alpha: 0.25),
+                              ),
+                            ),
+                            child: Padding(
+                              padding: const EdgeInsets.all(20),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    width: 56,
+                                    height: 56,
+                                    decoration: BoxDecoration(
+                                      color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(14),
+                                    ),
+                                    child: Icon(icon, color: theme.colorScheme.primary, size: 28),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        Text(_displayName(id), style: theme.textTheme.titleMedium),
+                                        const SizedBox(height: 6),
+                                        Text(desc, style: theme.textTheme.bodySmall),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  FilledButton.icon(
+                                    onPressed: () async {
+                                      setState(() => _voiceStyle = id);
+                                      await TTSService.instance.speakSampleForStyle(id);
+                                    },
+                                    icon: const Icon(Icons.play_arrow, color: Colors.white),
+                                    label: const Text('Preview'),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
                       },
                     ),
+                  ),
                 ],
               ),
-              const SizedBox(height: 16),
-              Text('Language', style: theme.textTheme.titleMedium),
-              Wrap(
-                spacing: 8,
-                children: [
-                  for (final l in languages)
-                    ChoiceChip(
-                      label: Text(l),
-                      selected: _language == l,
-                      onSelected: (_) async {
-                        setState(() => _language = l);
-                        await TTSService.instance.setLanguage(l);
-                        await TTSService.instance.speak('Language set to $l');
-                      },
-                    ),
-                ],
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
+  }
+
+  String _displayName(String id) {
+    switch (id) {
+      case 'warm':
+        return 'Warm';
+      case 'bright':
+        return 'Bright';
+      case 'calm':
+        return 'Calm';
+      default:
+        return 'Default';
+    }
   }
 }
 

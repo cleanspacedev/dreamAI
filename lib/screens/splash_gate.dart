@@ -31,7 +31,8 @@ class _SplashGateState extends State<SplashGate> {
       final doc = await FirebaseFirestore.instance.collection('users').doc(user.uid).get();
       final data = doc.data() ?? {};
       final prefs = (data['preferences'] as Map?)?.cast<String, dynamic>() ?? {};
-      final hasPrefs = prefs.containsKey('theme') && prefs.containsKey('voiceStyle') && prefs.containsKey('language');
+      // Consider onboarding complete if user marked onboarded or voiceStyle chosen.
+      final hasPrefs = prefs.containsKey('voiceStyle');
       final onboarded = prefs['onboarded'] == true;
       if (mounted) {
         if (hasPrefs || onboarded) {

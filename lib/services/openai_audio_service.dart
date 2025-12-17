@@ -35,10 +35,12 @@ class OpenAIAudioService {
         ? model!.trim()
         : 'gpt-4o-mini-transcribe'; // As of 2025-12 preferred; falls back below
 
-    final uri = Uri.parse(openAiEndpoint).resolve('audio/transcriptions');
+    final uri = openAiBase().resolve('audio/transcriptions');
 
     final request = http.MultipartRequest('POST', uri)
-      ..headers['Authorization'] = 'Bearer $openAiApiKey'
+      ..headers.addAll({
+        if (openAiApiKey.isNotEmpty) 'Authorization': 'Bearer $openAiApiKey',
+      })
       ..fields['model'] = usedModel
       ..files.add(
         http.MultipartFile.fromBytes(

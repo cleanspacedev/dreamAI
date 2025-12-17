@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:dreamweaver/services/functions_service.dart';
 
 import 'package:dreamweaver/openai/openai_config.dart' as openai;
 
@@ -115,11 +116,50 @@ class PromptsService extends ChangeNotifier {
     try {
       await ref.set(model.toJson());
     } catch (e) {
-      // Another client may have created it concurrently; read back
-      debugPrint('Failed to create today prompt (likely exists): $e');
+      // If rules reject client writes, fall back to Cloud Function to create it server-side.
+      final msg = e.toString();
+      if (msg.contains('permission-denied') || msg.contains('PERMISSION_DENIED')) {
+        debugPrint('Client write denied for prompts. Falling back to Cloud Function. Error: $e');
+        try {
+          // Lazy import to avoid tight coupling
+          // ignore: prefer_interpolation_to_compose_strings
+          debugPrint('Invoking ensureTodayPrompt Cloud Function...');
+          // Use a local import to avoid circular deps at file top
+          // ignore: avoid_dynamic_calls
+        } catch (_) {}
+        try {
+          // Call via FunctionsService
+          // We import here to keep top-level clean
+          // ignore: unnecessary_import
+          // ignore: depend_on_referenced_packages
+        } catch (_) {}
+        try {
+          // We can't import inside a method in Dart, so actually add a direct dependency at file top
+          // Instead, call through a helper below.
+          await _ensurePromptViaFunction(language: language, topic: topic);
+        } catch (fe) {
+          debugPrint('Cloud Function ensureTodayPrompt failed: $fe');
+        }
+      } else {
+        // Another client may have created it concurrently; read back
+        debugPrint('Failed to create today prompt (likely exists): $e');
+      }
     }
     final doc = await ref.get();
     return PromptModel.fromDoc(doc);
+  }
+
+  Future<void> _ensurePromptViaFunction({String? language, String? topic}) async {
+    try {
+      // Import locally
+      // ignore: unnecessary_import
+      // ignore: implementation_imports
+      // Use the global FunctionsService
+      final functions = FunctionsService();
+      await functions.ensureTodayPrompt(language: language, topic: topic);
+    } catch (e) {
+      debugPrint('ensureTodayPrompt via function error: $e');
+    }
   }
 
   /// Compute current streak (consecutive days up to today) of prompt-based entries

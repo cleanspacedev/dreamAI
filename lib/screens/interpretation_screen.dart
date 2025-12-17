@@ -4,7 +4,7 @@ import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_sound/flutter_sound.dart';
+// FlutterSound is avoided on Web to prevent duplicate JS includes; TTS uses TTSService
 import 'package:go_router/go_router.dart';
 import 'package:provider/provider.dart';
 
@@ -17,6 +17,7 @@ import 'package:dreamweaver/widgets/paywall_sheet.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb;
 import 'package:dreamweaver/widgets/translated_text.dart';
 import 'package:dreamweaver/services/translation_service.dart';
+import 'package:dreamweaver/services/tts_service.dart';
 
 /// Interpretation & Insights screen
 /// - Streams dream doc for processing status and ETA
@@ -37,24 +38,46 @@ class _InterpretationScreenState extends State<InterpretationScreen> {
   Duration _remaining = Duration.zero;
   DateTime? _eta;
 
-  // TTS playback
-  final FlutterSoundPlayer _player = FlutterSoundPlayer();
-  bool _playerReady = false;
+  // TTS playback state
   bool _isPlaying = false;
-  Uint8List? _speechCache;
+  
+  // Retry handling for stuck processing
+  bool _retrying = false;
 
   @override
   void initState() {
     super.initState();
-    _player.openPlayer().then((_) => setState(() => _playerReady = true));
+    // No-op init for TTS is handled inside TTSService
+  }
+
+  Future<void> _retryProcessing() async {
+    final uid = fb.FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null || _retrying) return;
+    setState(() => _retrying = true);
+    try {
+      // Optimistically mark as processing again
+      await FirebaseFirestore.instance.collection('dreams').doc(widget.dreamId).update({
+        'metadata.status': 'processing',
+        'metadata.processing': true,
+        'metadata.progress': 0.1,
+        'metadata.timelineEstSec': 45,
+        'updatedAt': Timestamp.now(),
+      });
+      await FunctionsService().processDream({'dreamId': widget.dreamId, 'ownerId': uid});
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Retry started')));
+    } catch (e) {
+      debugPrint('retry processDream error: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to retry processing')));
+    } finally {
+      if (mounted) setState(() => _retrying = false);
+    }
   }
 
   @override
   void dispose() {
     _timer?.cancel();
-    if (_player.isOpen()) {
-      _player.closePlayer();
-    }
     super.dispose();
   }
 
@@ -71,38 +94,16 @@ class _InterpretationScreenState extends State<InterpretationScreen> {
   }
 
   Future<void> _playTts(String text) async {
-    if (!_playerReady) return;
     try {
-      // Translate to user's language before TTS
-      Uint8List? ttsBytes;
-      try {
-        final translator = context.read<TranslationService>();
-        final translated = await translator.translate(text, contextKey: 'insights.tts');
-        // Invalidate cache when text/language changes
-        _speechCache = null;
-        ttsBytes = await openAiTtsSynthesize(text: translated);
-      } catch (e) {
-        debugPrint('TTS translation error: $e');
-      }
-      // Cache the speech once per session
-      _speechCache ??= ttsBytes;
-      final bytes = _speechCache;
-      if (bytes == null) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('TTS unavailable')));
-        }
-        return;
-      }
       if (_isPlaying) {
-        await _player.stopPlayer();
+        await TTSService.instance.stop();
         setState(() => _isPlaying = false);
         return;
       }
-      await _player.startPlayer(
-        fromDataBuffer: bytes,
-        codec: Codec.mp3,
-        whenFinished: () => setState(() => _isPlaying = false),
-      );
+      // Translate to user's language before TTS, then speak
+      final translator = context.read<TranslationService>();
+      final translated = await translator.translate(text, contextKey: 'insights.tts') ?? text;
+      await TTSService.instance.speak(translated);
       setState(() => _isPlaying = true);
     } catch (e) {
       debugPrint('TTS play error: $e');
@@ -191,6 +192,8 @@ class _InterpretationScreenState extends State<InterpretationScreen> {
                           progress: progress,
                           remaining: _remaining,
                           timelineEstSec: timelineEstSec,
+                          onRetry: _retryProcessing,
+                          retrying: _retrying,
                         )
                       : _AnalysisView(
                           key: const ValueKey('analysis'),
@@ -214,6 +217,8 @@ class _ProcessingView extends StatelessWidget {
   final double progress;
   final Duration remaining;
   final double timelineEstSec;
+  final VoidCallback onRetry;
+  final bool retrying;
 
   const _ProcessingView({
     super.key,
@@ -221,6 +226,8 @@ class _ProcessingView extends StatelessWidget {
     required this.progress,
     required this.remaining,
     required this.timelineEstSec,
+    required this.onRetry,
+    required this.retrying,
   });
 
   @override
@@ -278,15 +285,36 @@ class _ProcessingView extends StatelessWidget {
                     children: [
                       const Icon(Icons.notifications_active_outlined, size: 18),
                       const SizedBox(width: 6),
-                      Expanded(
-                         child: const TranslatedText(
-                           "This might take a minute. We'll notify you when it's ready. You can close this screen.",
-                           contextKey: 'helper.long_job',
-                         ),
+                      const Expanded(
+                        child: TranslatedText(
+                          "This might take a minute. We'll notify you when it's ready. You can close this screen.",
+                          contextKey: 'helper.long_job',
+                        ),
                       ),
                     ],
                   ),
                 ],
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    const Icon(Icons.help_outline, size: 18),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Stuck for too long? You can retry the analysis.',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: retrying ? null : onRetry,
+                      icon: retrying
+                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.refresh),
+                      label: const Text('Retry'),
+                    ),
+                  ],
+                ),
               ],
             ),
           ),

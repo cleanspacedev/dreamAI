@@ -203,6 +203,42 @@ ThemeData get lightTheme => ThemeData(
     elevation: 0,
     scrolledUnderElevation: 0,
   ),
+  // Larger, comfortable buttons globally
+  filledButtonTheme: FilledButtonThemeData(
+    style: ButtonStyle(
+      minimumSize: WidgetStateProperty.all(const Size(140, 56)),
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 28, vertical: 18)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      ),
+    ),
+  ),
+  elevatedButtonTheme: ElevatedButtonThemeData(
+    style: ButtonStyle(
+      minimumSize: WidgetStateProperty.all(const Size(140, 56)),
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 28, vertical: 18)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      ),
+    ),
+  ),
+  outlinedButtonTheme: OutlinedButtonThemeData(
+    style: ButtonStyle(
+      minimumSize: WidgetStateProperty.all(const Size(140, 56)),
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 28, vertical: 18)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      ),
+    ),
+  ),
+  textButtonTheme: TextButtonThemeData(
+    style: ButtonStyle(
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 20, vertical: 16)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+      ),
+    ),
+  ),
   cardTheme: CardThemeData(
     elevation: 0,
     shape: RoundedRectangleBorder(
@@ -247,6 +283,42 @@ ThemeData get darkTheme => ThemeData(
     foregroundColor: DarkModeColors.darkOnSurface,
     elevation: 0,
     scrolledUnderElevation: 0,
+  ),
+  // Larger, comfortable buttons globally
+  filledButtonTheme: FilledButtonThemeData(
+    style: ButtonStyle(
+      minimumSize: WidgetStateProperty.all(const Size(140, 56)),
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 28, vertical: 18)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      ),
+    ),
+  ),
+  elevatedButtonTheme: ElevatedButtonThemeData(
+    style: ButtonStyle(
+      minimumSize: WidgetStateProperty.all(const Size(140, 56)),
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 28, vertical: 18)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      ),
+    ),
+  ),
+  outlinedButtonTheme: OutlinedButtonThemeData(
+    style: ButtonStyle(
+      minimumSize: WidgetStateProperty.all(const Size(140, 56)),
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 28, vertical: 18)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      ),
+    ),
+  ),
+  textButtonTheme: TextButtonThemeData(
+    style: ButtonStyle(
+      padding: WidgetStateProperty.all(const EdgeInsets.symmetric(horizontal: 20, vertical: 16)),
+      shape: WidgetStateProperty.all(
+        RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+      ),
+    ),
   ),
   cardTheme: CardThemeData(
     elevation: 0,

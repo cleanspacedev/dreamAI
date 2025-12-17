@@ -1,0 +1,34 @@
+// GENERATED CODE - DO NOT MODIFY BY HAND
+// ignore_for_file: unused_import
+import 'package:flutter/material.dart';
+import 'package:flutter/widgets.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/cupertino.dart';
+import "package:web/web.dart";
+import "package:url_launcher/url_launcher.dart";
+import "package:purchases_flutter/purchases_flutter.dart";
+import "package:fl_chart/fl_chart.dart";
+import "package:share_plus/share_plus.dart";
+import "package:video_player/video_player.dart";
+import "package:path_provider/path_provider.dart";
+import "package:flutter_tts/flutter_tts.dart";
+import "package:google_sign_in/google_sign_in.dart";
+import "package:firebase_crashlytics/firebase_crashlytics.dart";
+import "package:flutter_localizations/flutter_localizations.dart";
+import "package:cupertino_icons/cupertino_icons.dart";
+import "package:google_fonts/google_fonts.dart";
+import "package:provider/provider.dart";
+import "package:go_router/go_router.dart";
+import "package:firebase_core/firebase_core.dart";
+import "package:cloud_firestore/cloud_firestore.dart";
+import "package:firebase_auth/firebase_auth.dart";
+import "package:firebase_storage/firebase_storage.dart";
+import "package:cloud_functions/cloud_functions.dart";
+import "package:firebase_analytics/firebase_analytics.dart";
+import "package:firebase_messaging/firebase_messaging.dart";
+import "package:http/http.dart";
+import "package:flutter_sound/flutter_sound.dart";
+import "package:speech_to_text/speech_to_text.dart";
+import "package:permission_handler/permission_handler.dart";
+import "package:shared_preferences/shared_preferences.dart";
+import "package:intl/intl.dart";

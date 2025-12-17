@@ -73,7 +73,9 @@ class _DreamLoggingScreenState extends State<DreamLoggingScreen> {
   void initState() {
     super.initState();
     _initStt();
-    _recorder.openRecorder();
+    if (!kIsWeb) {
+      _recorder.openRecorder();
+    }
     // If prefill exists, show the keyboard to start typing and optionally seed title
     if (widget.prefill != null) {
       // Defer setting controller text to after first frame
@@ -106,7 +108,9 @@ class _DreamLoggingScreenState extends State<DreamLoggingScreen> {
     _titleController.dispose();
     _focusNode.dispose();
     _stt.stop();
-    _recorder.closeRecorder();
+    if (!kIsWeb) {
+      _recorder.closeRecorder();
+    }
     super.dispose();
   }
 

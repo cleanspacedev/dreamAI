@@ -14,6 +14,9 @@ import 'package:dreamweaver/theme.dart';
 import 'package:dreamweaver/screens/journal_history_screen.dart';
 import 'package:dreamweaver/screens/dream_logging_screen.dart';
 import 'package:dreamweaver/widgets/admin_trends_sheet.dart';
+import 'package:dreamweaver/widgets/paywall_sheet.dart';
+import 'package:dreamweaver/auth/firebase_auth_manager.dart';
+import 'package:dreamweaver/nav.dart';
 
 /// Home/Dashboard with bottom tab bar (Home, Journal)
 class HomePage extends StatefulWidget {
@@ -269,6 +272,67 @@ class _Header extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(width: 8),
+          IconButton(
+            tooltip: 'Settings',
+            icon: const Icon(Icons.settings),
+            onPressed: () async {
+              await showModalBottomSheet(
+                context: context,
+                useSafeArea: true,
+                builder: (ctx) => SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ListTile(
+                          leading: const Icon(Icons.settings_outlined),
+                          title: const Text('Open Settings'),
+                          onTap: () {
+                            Navigator.of(ctx).pop();
+                            context.push(AppRoutes.settings);
+                          },
+                        ),
+                        ListTile(
+                          leading: const Icon(Icons.workspace_premium_outlined),
+                          title: const Text('Manage subscription'),
+                          onTap: () async {
+                            Navigator.of(ctx).pop();
+                            await showModalBottomSheet(
+                              context: context,
+                              isScrollControlled: true,
+                              useSafeArea: true,
+                              builder: (c) => const PaywallSheet(reason: 'settings'),
+                            );
+                          },
+                        ),
+                        const Divider(height: 0),
+                        ListTile(
+                          leading: Icon(Icons.logout, color: theme.colorScheme.error),
+                          title: Text('Sign out', style: TextStyle(color: theme.colorScheme.error)),
+                          onTap: () async {
+                            Navigator.of(ctx).pop();
+                            try {
+                              await context.read<FirebaseAuthManager>().signOut();
+                              if (context.mounted) context.go(AppRoutes.gate);
+                            } catch (e) {
+                              debugPrint('Header sign out error: $e');
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Failed to sign out. Please try again.')),
+                                );
+                              }
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
         ],
       ),
     );
@@ -342,16 +406,24 @@ class _UsageSection extends StatelessWidget {
   }
 }
 
-class _DailyPromptCard extends StatelessWidget {
+class _DailyPromptCard extends StatefulWidget {
   final String userId;
   final String? userLanguage;
   const _DailyPromptCard({super.key, required this.userId, this.userLanguage});
 
   @override
+  State<_DailyPromptCard> createState() => _DailyPromptCardState();
+}
+
+class _DailyPromptCardState extends State<_DailyPromptCard> {
+  PromptModel? _localPrompt;
+  bool _generating = false;
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final prompts = FirebaseFirestore.instance.collection('prompts');
-    final streakStream = context.read<PromptsService>().streamPromptStreak(userId);
+    final streakStream = context.read<PromptsService>().streamPromptStreak(widget.userId);
     // Fetch all and locally pick the most recent by 'date' or 'createdAt'
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: prompts.snapshots(),
@@ -360,7 +432,7 @@ class _DailyPromptCard extends StatelessWidget {
           return const Card(child: SizedBox(height: 120, child: Center(child: CircularProgressIndicator())));
         }
         final docs = snapshot.data?.docs ?? [];
-        if (docs.isEmpty) {
+        if (docs.isEmpty && _localPrompt == null) {
           return Card(
             child: Padding(
               padding: const EdgeInsets.all(16),
@@ -371,38 +443,61 @@ class _DailyPromptCard extends StatelessWidget {
                   Expanded(child: Text('No prompt for today yet.', style: theme.textTheme.bodyMedium)),
                   const SizedBox(width: 12),
                   FilledButton.icon(
-                    onPressed: () async {
-                      try {
-                        await context.read<PromptsService>().ensureTodayPrompt(language: userLanguage);
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Generated today\'s prompt')));
-                        }
-                      } catch (e) {
-                        debugPrint('Generate prompt error: $e');
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to generate prompt')));
-                        }
-                      }
-                    },
-                    icon: const Icon(Icons.auto_awesome, color: Colors.white),
-                    label: const Text('Generate'),
+                    onPressed: _generating
+                        ? null
+                        : () async {
+                            setState(() => _generating = true);
+                            try {
+                              final model = await context.read<PromptsService>().ensureTodayPrompt(language: widget.userLanguage);
+                              setState(() => _localPrompt = model);
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Generated today\'s prompt')));
+                              }
+                            } catch (e) {
+                              debugPrint('Generate prompt error: $e');
+                              if (context.mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to generate prompt')));
+                              }
+                            } finally {
+                              if (mounted) setState(() => _generating = false);
+                            }
+                          },
+                    icon: _generating
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : const Icon(Icons.auto_awesome, color: Colors.white),
+                    label: Text(_generating ? 'Generating…' : 'Generate'),
                   ),
                 ],
               ),
             ),
           );
         }
-        docs.sort((a, b) {
-          final aData = a.data();
-          final bData = b.data();
-          final aTs = (aData['date'] ?? aData['createdAt']);
-          final bTs = (bData['date'] ?? bData['createdAt']);
-          final aDate = aTs is Timestamp ? aTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
-          final bDate = bTs is Timestamp ? bTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
-          return bDate.compareTo(aDate);
-        });
-        final latest = docs.first.data();
-        final text = (latest['text'] as String?) ?? (latest['prompt'] as String?) ?? 'Reflect on your most vivid moment.';
+
+        // Resolve prompt to show: prefer remote latest; otherwise local fallback
+        String? docId;
+        Map<String, dynamic>? latest;
+        if (docs.isNotEmpty) {
+          docs.sort((a, b) {
+            final aData = a.data();
+            final bData = b.data();
+            final aTs = (aData['date'] ?? aData['createdAt']);
+            final bTs = (bData['date'] ?? bData['createdAt']);
+            final aDate = aTs is Timestamp ? aTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+            final bDate = bTs is Timestamp ? bTs.toDate() : DateTime.fromMillisecondsSinceEpoch(0);
+            return bDate.compareTo(aDate);
+          });
+          latest = docs.first.data();
+          docId = docs.first.id;
+        }
+
+        final text = latest != null
+            ? ((latest['text'] as String?) ?? (latest['prompt'] as String?) ?? 'Reflect on your most vivid moment.')
+            : (_localPrompt?.text ?? 'Reflect on your most vivid moment.');
+        final themeStr = latest != null ? (latest['theme'] as String?) : _localPrompt?.theme;
+        final tags = latest != null
+            ? (latest['tags'] as List?)?.map((e) => e.toString()).toList()
+            : _localPrompt?.tags;
+
         return StreamBuilder<int>(
           stream: streakStream,
           builder: (context, streakSnap) {
@@ -436,7 +531,7 @@ class _DailyPromptCard extends StatelessWidget {
                           onPressed: () async {
                             try {
                               // Use local TTS for quick readout
-                              await TTSService.instance.setLanguage(userLanguage ?? 'en-US');
+                              await TTSService.instance.setLanguage(widget.userLanguage ?? 'en-US');
                               await TTSService.instance.speak(text);
                             } catch (e) {
                               debugPrint('Prompt TTS error: $e');
@@ -448,11 +543,8 @@ class _DailyPromptCard extends StatelessWidget {
                         const Spacer(),
                         TextButton.icon(
                           onPressed: () {
-                            final docId = docs.first.id;
-                            final themeStr = (latest['theme'] as String?);
-                            final tags = (latest['tags'] as List?)?.map((e) => e.toString()).toList();
                             final prefill = DreamLogPrefill(
-                              promptId: docId,
+                              promptId: docId ?? (_localPrompt?.id ?? 'local'),
                               promptText: text,
                               theme: themeStr,
                               tags: tags,

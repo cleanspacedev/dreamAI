@@ -22,6 +22,7 @@ import 'package:dreamweaver/services/push_messaging_service.dart';
 import 'package:dreamweaver/services/prompts_service.dart';
 import 'package:dreamweaver/services/billing_service.dart';
 import 'package:dreamweaver/services/freemium_service.dart';
+import 'package:dreamweaver/services/theme_service.dart';
 
 /// Main entry point for the DreamWeaver application
 ///
@@ -87,8 +88,16 @@ void main() {
       };
     }
 
-    // Register background handler for FCM
-    FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+    // Register background handler for FCM (not supported on Web)
+    if (!kIsWeb) {
+      try {
+        FirebaseMessaging.onBackgroundMessage(_firebaseMessagingBackgroundHandler);
+      } catch (e) {
+        debugPrint('FCM background handler registration error: $e');
+      }
+    } else {
+      debugPrint('Skipping FirebaseMessaging.onBackgroundMessage on Web');
+    }
 
     // Initialize Firebase Analytics (screen view events configured via GoRouter observers)
     // Access instance to ensure it is ready
@@ -129,23 +138,24 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider<BillingService>(create: (_) => BillingService.instance),
         ChangeNotifierProvider<FreemiumService>(create: (_) => FreemiumService()),
         ChangeNotifierProvider<LanguageService>(create: (_) => LanguageService()),
+        ChangeNotifierProvider<ThemeService>(create: (_) => ThemeService()),
         ChangeNotifierProxyProvider<LanguageService, TranslationService>(
           create: (ctx) => TranslationService(languageService: ctx.read<LanguageService>()),
           update: (ctx, lang, prev) => prev ?? TranslationService(languageService: lang),
         ),
       ],
-      child: Consumer<LanguageService>(
-        builder: (context, lang, _) => MaterialApp.router(
-        title: 'DreamWeaver',
-        debugShowCheckedModeBanner: false,
-        theme: lightTheme,
-        darkTheme: darkTheme,
-        themeMode: ThemeMode.dark,
-        localizationsDelegates: const [
-          GlobalMaterialLocalizations.delegate,
-          GlobalWidgetsLocalizations.delegate,
-          GlobalCupertinoLocalizations.delegate,
-        ],
+      child: Consumer2<LanguageService, ThemeService>(
+        builder: (context, lang, themeSvc, _) => MaterialApp.router(
+          title: 'DreamWeaver',
+          debugShowCheckedModeBanner: false,
+          theme: lightTheme,
+          darkTheme: darkTheme,
+          themeMode: themeSvc.mode,
+          localizationsDelegates: const [
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
           // Expand supported locales, including RTL languages
           supportedLocales: const [
             Locale('en'),
@@ -172,7 +182,7 @@ class MyApp extends StatelessWidget {
             }
             return supported.first;
           },
-        routerConfig: AppRouter.router,
+          routerConfig: AppRouter.router,
         ),
       ),
     );

@@ -1,5 +1,8 @@
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
 /// Service for calling Firebase Cloud Functions
 class FunctionsService {
@@ -78,6 +81,54 @@ class FunctionsService {
       return result.data;
     } catch (e) {
       debugPrint('Cloud Functions adminGetTrends error: $e');
+      rethrow;
+    }
+  }
+
+  /// Ensure today's public prompt exists (server-authoritative) and return it.
+  /// Cloud Function name: ensureTodayPrompt
+  ///
+  /// The backend should create/update the doc in the top-level `prompts/{yyyyMMdd}`
+  /// collection with necessary fields. This avoids client write permission issues.
+  Future<Map<String, dynamic>> ensureTodayPrompt({String? language, String? topic}) async {
+    try {
+      final callable = _functions.httpsCallable('ensureTodayPrompt');
+      final result = await callable.call<Map<String, dynamic>>({
+        if (language != null) 'language': language,
+        if (topic != null) 'topic': topic,
+      });
+      return result.data;
+    } catch (e) {
+      debugPrint('Cloud Functions ensureTodayPrompt error: $e');
+      // Web often hits CORS issues if the callable endpoint is restricted.
+      // Provide a CORS-safe HTTP fallback that calls our onRequest wrapper.
+      if (kIsWeb) {
+        try {
+          final proj = Firebase.app().options.projectId;
+          final regionHost = region; // e.g. us-central1
+          if (proj != null && proj.isNotEmpty) {
+            final uri = Uri.parse('https://$regionHost-$proj.cloudfunctions.net/ensureTodayPromptHttp');
+            final resp = await http.post(
+              uri,
+              headers: const {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+              },
+              body: jsonEncode({
+                if (language != null) 'language': language,
+                if (topic != null) 'topic': topic,
+              }),
+            );
+            if (resp.statusCode == 200) {
+              final data = json.decode(utf8.decode(resp.bodyBytes)) as Map<String, dynamic>;
+              return data;
+            }
+            debugPrint('ensureTodayPromptHttp ${resp.statusCode}: ${utf8.decode(resp.bodyBytes, allowMalformed: true)}');
+          }
+        } catch (we) {
+          debugPrint('ensureTodayPrompt web fallback failed: $we');
+        }
+      }
       rethrow;
     }
   }
